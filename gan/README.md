@@ -20,7 +20,7 @@ Z     = gan.latent_sample(3000)
 Xpred = gan.G.predict(Z)
 scatter(X,Xpred)
 ```
-[x0](../doc/gan.X0.png?raw=true)
+![x0](../doc/gan.X0.png?raw=true)
 
 Now train the model:
 ``` python
@@ -34,4 +34,4 @@ Z     = gan.latent_sample(3000)
 Xpred = gan.G.predict(Z)
 scatter(X,Xpred)
 ```
-[x1](../doc/gan.Xt.png?raw=true)
+![x1](../doc/gan.Xt.png?raw=true)
