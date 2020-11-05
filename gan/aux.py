@@ -118,7 +118,7 @@ if __name__ == '__main__':
     Xpred = gan.G.predict(Z)
     scatter(X,Xpred, bins=50, path='../doc/gan.X0.png')
 
-    gan.train(X, epochs=500)
+    gan.train(X, epochs=2000)
 
     # Generate 3000 new points after training:
     Z     = gan.latent_sample(3000)
