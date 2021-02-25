@@ -8,6 +8,9 @@ class Mol:
         self.xyz     = np.array(xyz)
         assert self.xyz.ndim == 2
         assert self.xyz.shape[-1] == 3
+        sortby = self.numbers.argsort()
+        self.xyz = self.xyz[sortby]
+        self.numbers = self.numbers[sortby]
         self.name = name
 
     def __len__(self):
@@ -19,8 +22,6 @@ class Mol:
             _  = ''.join(f"{i:>10.6f}" for i in coords)
             s += f"{num:<4}{_}\n"
         return s
-
-
 
     def dm(self, round=None) -> np.ndarray:
         """ Return the distance matrix of self """
