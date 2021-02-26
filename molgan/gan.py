@@ -53,23 +53,30 @@ class MolGAN:
         self.glr,self.dlr = learning_rate
 
         self.G, self.D  = None, None
+        self._trained = False
 
 
     def get_generator(self, original_dim):
+        # Generator(latent_dim) -> (elements, positions)
         # Activation function, neurons, layers, batch normalize, dropout
         a, n, l, b, d = self.ga, self.gn, self.gl, self.gb, self.gd
-        # Generator Model: Latent dim in > original dim out
-        generator = tf.keras.Sequential(name='generator')
-        generator.add(keras.Input(shape=(self.latent_dim,)))
-        for _ in range(l):
-            generator.add(keras.layers.Dense(n, use_bias=True))
-            if b:
-                generator.add(keras.layers.BatchNormalization())
-            generator.add(keras.layers.Activation(a))
-            if d:
-                generator.add(keras.layers.Dropout(d))
-        generator.add(keras.layers.Dense(original_dim, use_bias=True))
-        return generator
+        def stack(x):
+            for _ in range(l):
+                x = self.Dense(n, activation=a, batch_norm=b, dropout=d)(x)
+            return x
+
+        input = keras.Input(shape=(self.latent_dim,))
+
+        # elements:
+        x = stack(input)
+        elements = self.Dense(maxatoms)(x)
+        # coordinates:
+        x = keras.layers.Concatenate()([input, elements])
+        x = stack(x)
+        x = self.Dense(3*maxatoms)(x)
+        positions = keras.layers.Reshape((maxatoms,3))(x)
+
+        return tf.keras.Model(inputs=input, outputs=[elements,positions], name='generator')
 
 
     def get_discriminator(self, original_dim):
