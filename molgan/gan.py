@@ -1,3 +1,4 @@
+from typing import *
 from time import time
 import numpy as np
 import tensorflow as tf
@@ -76,24 +77,22 @@ class MolGAN:
         x = self.Dense(3*maxatoms)(x)
         positions = keras.layers.Reshape((maxatoms,3))(x)
 
-        return tf.keras.Model(inputs=input, outputs=[elements,positions], name='generator')
+        return keras.Model(inputs=input, outputs=[elements,positions], name='generator')
 
 
     def get_discriminator(self, original_dim):
+        # Discriminator Model: original dim in > bool out (real,fake)
         # Activation function, neurons, layers, dropout
         a, n, l, b, d = self.da, self.dn, self.dl, self.db, self.dd
-        # Discriminator Model: original dim in > bool out (real,fake)
-        discriminator = tf.keras.Sequential(name='discriminator')
-        discriminator.add(keras.Input(shape=(original_dim,)))
-        for _ in range(l):
-            discriminator.add(keras.layers.Dense(n, activation=a))
-            if b:
-                discriminator.add(keras.layers.BatchNormalization())
-            discriminator.add(keras.layers.Activation(a))
-            if d:
-                discriminator.add(keras.layers.Dropout(d))
-        discriminator.add(keras.layers.Dense(1))
-        return discriminator
+        def stack(x):
+            for _ in range(l):
+                x = self.Dense(n, activation=a, batch_norm=b, dropout=d)(x)
+            return x
+
+        input  = keras.Input(shape=(original_dim,))
+        x      = stack(input)
+        output = self.Dense(1)(x)
+        return keras.Model(inputs=input, outputs=output, name='discriminator')
 
 
     def train(self, X, epochs, depochs=1, batch_size=128, wasserstein=True, lam=1., verbose=True):
@@ -116,9 +115,14 @@ class MolGAN:
         lam : float >= 0
             Gradient penalty regularization factor for the Wasserstein distance loss
         """
-        X   = tf.cast(X, tf.keras.backend.floatx())
-        dim = np.prod(X[0].shape)
-        self.set_models(dim)
+        assert all(isinstance(i, Mol) for i in X), "Expecting `X` to be a sequence of `Mol` instances"
+
+        # %%
+        hashes    = [list(mol.hash(round=2)) for mol in X]
+        vec_layer = self.get_vectorization_layer(hashes)
+        X         = vec_layer(hashes)
+        X         = tf.cast(X, tf.keras.backend.floatx())
+        self.set_models(X[0].shape)
 
         gopt = self.go or tf.optimizers.Adam(self.glr)
         dopt = self.do or tf.optimizers.Adam(self.dlr)
