@@ -228,9 +228,24 @@ class MolGAN:
                 print(f"{g:.3e} {d:.3e}", file=f)
 
     @staticmethod
-    def get_vectorization_layer(hashes:List[str]) -> TextVectorization:
-        hash   = np.array([list(i) for i in hashes])
-        vocab  = np.unique(hash)
+    def get_vectorization_layer(hashes:np.ndarray) -> TextVectorization: # hashes has to be a 2d array of strings
+        # hash   = np.array([list(i) for i in hashes])
+        vocab  = np.unique(hashes)
         layer  = TextVectorization(max_tokens=len(vocab)+2, split=None, vocabulary=vocab)
-        assert 1 not in np.array(layer(hash)), "Unknown characters in vectorized data"
+        # assert 1 not in np.array(layer(hashes)), "Unknown characters in vectorized data"
         return layer
+
+    @staticmethod
+    def Dense(size, dropout=0, batch_norm=False, activation=None):
+        ret = keras.Sequential()
+        ret.add(keras.layers.Dense(size, use_bias=True))
+        if batch_norm:
+            ret.add(keras.layers.BatchNormalization())
+        if activation:
+            if isinstance(activation, str):
+                ret.add(keras.layers.Activation(activation))
+            else:
+                ret.add(activation)
+        if dropout:
+            ret.add(keras.layers.Dropout(d))
+        return ret
