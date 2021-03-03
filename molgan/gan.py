@@ -57,7 +57,7 @@ class MolGAN:
         self._trained = False
 
 
-    def get_generator(self, original_dim, maxatoms):
+    def get_generator(self, maxatoms):
         # Generator(latent_dim) -> (elements, positions)
         # Activation function, neurons, layers, batch normalize, dropout
         a, n, l, b, d = self.ga, self.gn, self.gl, self.gb, self.gd
@@ -71,6 +71,7 @@ class MolGAN:
         # elements:
         x = stack(input)
         elements = self.Dense(maxatoms)(x)
+        elements = keras.layers.Lambda(lambda x: tf.math.round(x))(elements) # round atomic numbers
         # coordinates:
         x = keras.layers.Concatenate()([input, elements])
         x = stack(x)
@@ -80,8 +81,8 @@ class MolGAN:
         return keras.Model(inputs=input, outputs=[elements,positions], name='generator')
 
 
-    def get_discriminator(self, original_dim):
-        # Discriminator Model: original dim in > bool out (real,fake)
+    def get_discriminator(self, maxatoms):
+        # Discriminator Model: atomic numbers, atomic positions > bool out (real,fake)
         # Activation function, neurons, layers, dropout
         a, n, l, b, d = self.da, self.dn, self.dl, self.db, self.dd
         def stack(x):
@@ -89,19 +90,22 @@ class MolGAN:
                 x = self.Dense(n, activation=a, batch_norm=b, dropout=d)(x)
             return x
 
-        input  = keras.Input(shape=(original_dim,))
-        x      = stack(input)
-        output = self.Dense(1)(x)
-        return keras.Model(inputs=input, outputs=output, name='discriminator')
+        elements   = keras.Input(shape=(maxatoms, ), name='elements')
+        positions  = keras.Input(shape=(maxatoms,3), name='positions')
+        x          = DM_Triu()(positions)
+        x          = keras.layers.Concatenate()([elements, x])
+        x          = stack(x)
+        output     = self.Dense(1)(x)
+        return keras.Model(inputs=[elements, positions], outputs=output, name='discriminator')
 
 
-    def train(self, X, epochs, depochs=1, batch_size=128, wasserstein=True, lam=1., verbose=True):
+    def train(self, mols:List[Mol], epochs, depochs=1, batch_size=128, wasserstein=True, lam=1., verbose=True):
         """
         Train the GAN.
 
         Parameters
         ----------
-        X : mol.Mol
+        mols : mol.Mol
             List of Mol instances
         epochs : int
             Train for a total number of epochs
@@ -115,15 +119,13 @@ class MolGAN:
         lam : float >= 0
             Gradient penalty regularization factor for the Wasserstein distance loss
         """
-        assert all(isinstance(i, Mol) for i in X), "Expecting `X` to be a sequence of `Mol` instances"
-
-        maxatoms  = max([len(i) for i in X])
-        hashes    = [list(mol.hash(round=1)) for mol in X] # get mlecule hashes
-        vec_layer = self.get_vectorization_layer(hashes) # generate a layer that converts hash -> array of ints
-        Mols2X    = keras.layers.Lambda(lambda mols: tf.cast(   vec_layer( [list(mol.hash(round=1)) for mol in mols] ), keras.backend.floatx()   )) # converts a list ot Mols to Discriminator input vectors
-        X         = Mols2X(X)
-
-        self.set_models(len(hashes[0]), maxatoms)
+        assert all(isinstance(i, Mol) for i in mols), "Expecting `mols` to be a sequence of `Mol` instances"
+        maxatoms  = max([len(mol) for mol in mols])
+        np.random.shuffle(mols)
+        positions = tf.stack( [tf.pad(mol.xyz,     [[0, maxatoms-len(mol)], [0,0]]) for mol in mols] )
+        numbers   =           [tf.pad(mol.numbers, [[0, maxatoms-len(mol)]])        for mol in mols]
+        numbers   = tf.stack( [tf.cast(nums, tf.float32) for nums in numbers] )
+        self.set_models(maxatoms)
 
         gopt = self.go or tf.optimizers.Adam(self.glr)
         dopt = self.do or tf.optimizers.Adam(self.dlr)
@@ -131,17 +133,15 @@ class MolGAN:
         dloss, gloss = (self.dloss_w, self.gloss_w) if wasserstein else (self.dloss, self.gloss)
 
         @tf.function
-        def train_step(X):
+        def train_step(numbers, positions):
             # Train the Discriminator `depochs` times
             with tf.GradientTape() as dtape:
                 _dloss = []
                 for _ in range(depochs):
-                    Z      = self.latent_sample(len(X))
-                    numbers, positions = self.G(Z,    training=True)
-                    mols   = self.generator2mols(numbers, positions)
-                    Xhat   = Mols2X(mols)
-                    yhat = self.D(Xhat, training=True) # Generated vectors to 0
-                    y    = self.D(X,    training=True) # Real vectors to  1
+                    Z     = self.latent_sample(len(numbers))
+                    numbers_hat, positions_hat = self.G(Z,     training=True) # generate new molecules from Z
+                    yhat  = self.D(numbers_hat, positions_hat, training=True) # Generated vectors to 0
+                    y     = self.D(numbers,     positions,     training=True) # Real vectors to 1
                     _loss = dloss(y, yhat)
                     if wasserstein:
                         _loss += lam*self.gradient_penalty(self.D, X, Xhat)
@@ -161,13 +161,14 @@ class MolGAN:
 
             return float(_dloss), float(_gloss)
 
-        X_ds = tf.data.Dataset.from_tensor_slices(X).shuffle(len(X)).batch(batch_size)
+        numbers   = tf.data.Dataset.from_tensor_slices(numbers)  .batch(batch_size)
+        positions = tf.data.Dataset.from_tensor_slices(positions).batch(batch_size)
         hist = {'dloss':[], 'gloss':[]}
         t    = time()
         to_gif = []
         for epoch in range(epochs):
-            for x in X_ds:
-                _dloss, _gloss = train_step(x)
+            for batch in zip(numbers, positions):
+                _dloss, _gloss = train_step(*batch)
 
             if verbose:
                 if (epoch+1) % 100 == 0 or epoch == 0:
@@ -189,11 +190,11 @@ class MolGAN:
         # Generator input
         return tf.random.normal((n, self.latent_dim))
 
-    def set_models(self,dim,maxatoms):
+    def set_models(self, maxatoms):
         if self.G is None:
-            self.G = self.get_generator(dim,maxatoms)
+            self.G = self.get_generator(maxatoms)
         if self.D is None:
-            self.D = self.get_discriminator(dim)
+            self.D = self.get_discriminator(maxatoms)
 
     @staticmethod
     def gradient_penalty(model, reals, fakes):
@@ -258,13 +259,20 @@ class MolGAN:
             ret.add(keras.layers.Dropout(d))
         return ret
 
-    @staticmethod
-    def generator2mols(numbers, positions):
-        """ Convert Generator output to list of Mols """
-        ret = []
-        print(numbers.shape, positions.shape)
-        for nums, xyz in zip(numbers, positions):
-            nums = np.round(nums).astype(int)
-            mask = np.round(nums) != 0
-            ret.append( Mol(xyz[mask], nums[mask]) )
-        return ret
+
+
+class DM_Triu(keras.layers.Layer):
+    # Return the upper triangle of a coordinates distance matrix
+
+    # def __init__(self, round=None):
+    #     super().__init__()
+    #     if round is not None:
+    #         assert round >= 0
+    #     self.round = round
+
+    def build(self, input_shape):
+        self.mask = np.triu(np.ones((input_shape[1], input_shape[1]), dtype=bool), 1) # [0] is None
+
+    def call(self, input):
+        dm = tf.reduce_sum( (tf.expand_dims(input, 1)-tf.expand_dims(input, 0))**2, -1)**0.5
+        return dm[self.mask]
