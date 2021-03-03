@@ -57,7 +57,7 @@ class MolGAN:
         self._trained = False
 
 
-    def get_generator(self, original_dim):
+    def get_generator(self, original_dim, maxatoms):
         # Generator(latent_dim) -> (elements, positions)
         # Activation function, neurons, layers, batch normalize, dropout
         a, n, l, b, d = self.ga, self.gn, self.gl, self.gb, self.gd
@@ -117,12 +117,13 @@ class MolGAN:
         """
         assert all(isinstance(i, Mol) for i in X), "Expecting `X` to be a sequence of `Mol` instances"
 
-        # %%
-        hashes    = [list(mol.hash(round=2)) for mol in X]
-        vec_layer = self.get_vectorization_layer(hashes)
-        X         = vec_layer(hashes)
-        X         = tf.cast(X, tf.keras.backend.floatx())
-        self.set_models(X[0].shape)
+        maxatoms  = max([len(i) for i in X])
+        hashes    = [list(mol.hash(round=1)) for mol in X] # get mlecule hashes
+        vec_layer = self.get_vectorization_layer(hashes) # generate a layer that converts hash -> array of ints
+        Mols2X    = keras.layers.Lambda(lambda mols: tf.cast(   vec_layer( [list(mol.hash(round=1)) for mol in mols] ), keras.backend.floatx()   )) # converts a list ot Mols to Discriminator input vectors
+        X         = Mols2X(X)
+
+        self.set_models(len(hashes[0]), maxatoms)
 
         gopt = self.go or tf.optimizers.Adam(self.glr)
         dopt = self.do or tf.optimizers.Adam(self.dlr)
@@ -135,8 +136,10 @@ class MolGAN:
             with tf.GradientTape() as dtape:
                 _dloss = []
                 for _ in range(depochs):
-                    Z    = self.latent_sample(len(X))
-                    Xhat = self.G(Z,    training=True)
+                    Z      = self.latent_sample(len(X))
+                    numbers, positions = self.G(Z,    training=True)
+                    mols   = self.generator2mols(numbers, positions)
+                    Xhat   = Mols2X(mols)
                     yhat = self.D(Xhat, training=True) # Generated vectors to 0
                     y    = self.D(X,    training=True) # Real vectors to  1
                     _loss = dloss(y, yhat)
@@ -186,9 +189,9 @@ class MolGAN:
         # Generator input
         return tf.random.normal((n, self.latent_dim))
 
-    def set_models(self,dim):
+    def set_models(self,dim,maxatoms):
         if self.G is None:
-            self.G = self.get_generator(dim)
+            self.G = self.get_generator(dim,maxatoms)
         if self.D is None:
             self.D = self.get_discriminator(dim)
 
@@ -241,6 +244,7 @@ class MolGAN:
 
     @staticmethod
     def Dense(size, dropout=0, batch_norm=False, activation=None):
+        """ Basic NN building block """
         ret = keras.Sequential()
         ret.add(keras.layers.Dense(size, use_bias=True))
         if batch_norm:
@@ -252,4 +256,15 @@ class MolGAN:
                 ret.add(activation)
         if dropout:
             ret.add(keras.layers.Dropout(d))
+        return ret
+
+    @staticmethod
+    def generator2mols(numbers, positions):
+        """ Convert Generator output to list of Mols """
+        ret = []
+        print(numbers.shape, positions.shape)
+        for nums, xyz in zip(numbers, positions):
+            nums = np.round(nums).astype(int)
+            mask = np.round(nums) != 0
+            ret.append( Mol(xyz[mask], nums[mask]) )
         return ret
